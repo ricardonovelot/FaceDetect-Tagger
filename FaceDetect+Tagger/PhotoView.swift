@@ -78,7 +78,6 @@ struct PhotoView: View {
                         }
                         .padding()
                     }
-                    .safearea
                     
                     
                     Section{
@@ -237,13 +236,19 @@ extension PhotoView {
         @Published var faceThumbnails: [UIImage] = []
         
         func detectFaces() async {
+            
+            
+            
             guard let cgImage = imageItem.cgImage else {
                 print("Failed to get CGImage from UIImage")
                 return
             }
             let request = DetectFaceRectanglesRequest()
             
+            
             let handler = ImageRequestHandler(cgImage)
+
+            
             do {
                 self.detectedFaces = try await handler.perform(request)
                 await generateFaceThumbnails()
