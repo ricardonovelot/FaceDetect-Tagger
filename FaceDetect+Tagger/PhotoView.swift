@@ -59,26 +59,32 @@ struct PhotoView: View {
                         Image(uiImage: viewModel.imageItem)
                             .resizable()
                             .scaledToFit()
-                            .padding()
                         ScrollView(.horizontal) {
                             HStack{
-                                ForEach(viewModel.faceThumbnails, id: \.self) { thumbnail in
-                                    Image(uiImage: thumbnail)
+                                ForEach(viewModel.faceThumbnails, id: \.id) { thumbnail in
+                                    Image(uiImage: thumbnail.image)
                                         .resizable()
                                         .scaledToFit()
                                         .frame(width: 50, height: 50)
                                         .clipShape(Circle())
                                         .padding(4)
+                                        .overlay(
+                                            Circle()
+                                                .stroke(thumbnail.isSelected ? Color.blue : Color.clear, lineWidth: 2)
+                                        )
                                         .onTapGesture {
-                                            viewModel.showAddNameSheet = true
-                                            viewModel.newContactPhoto = thumbnail
+                                            // Deselect all thumbnails first
+                                            viewModel.deselectAllThumbnails()
+                                            // Select only the tapped thumbnail
+                                            if let index = viewModel.faceThumbnails.firstIndex(where: { $0.id == thumbnail.id }) {
+                                                viewModel.faceThumbnails[index].isSelected = true
+                                            }
                                         }
                                 }
                             }
                         }
-                        .padding()
                     }
-                    
+                    .listRowInsets(EdgeInsets())
                     
                     Section{
                         ForEach(viewModel.selectedNames){ contact in
@@ -88,7 +94,7 @@ struct PhotoView: View {
                     
                     Section{
                         TextField("", text: $viewModel.searchText, prompt: Text("Test"))
-                            .onChange(of: viewModel.searchText) { newValue in
+                            .onChange(of: viewModel.searchText) { oldValue, newValue in
                                 viewModel.updateSearchResults()
                             }
                             .autocorrectionDisabled(true)
@@ -98,35 +104,24 @@ struct PhotoView: View {
                                         viewModel.searchText = ""
                                     }
                                 }
-                                // move to viewcontroller
                                 if let firstResult = viewModel.searchResults.first,
                                    let index = viewModel.searchResults.firstIndex(where: { $0.id == firstResult.id }) {
                                     viewModel.selectedNames.append(firstResult)
                                     viewModel.searchResults[index].selected = true
                                 }
-                                
                             }
                     }
-                    
 
-                        
                     Section{
                         ForEach(viewModel.searchResults){ contact in
                             Text(contact.name)
-                                .foregroundStyle(contact.selected == true ? Color(uiColor: .secondaryLabel) : Color(uiColor: .label))
+                                .foregroundStyle(contact.selected ? Color(uiColor: .secondaryLabel) : Color(uiColor: .label))
                         }
                     }
-                    
                 }
             }
             .task {
                 await viewModel.detectFaces()
-            }
-            .sheet(isPresented: $viewModel.showAddNameSheet) {
-                Image(uiImage: viewModel.newContactPhoto)
-                    .resizable()
-                    .scaledToFit()
-                TextField("Add Name", text: $viewModel.newContactName)
             }
         }
     }
@@ -142,7 +137,7 @@ struct Contact: Identifiable {
     }
 }
 
-extension Contact{
+extension Contact {
     static var samples: [Contact] {
         return [
             Contact(name: "Rachel Green", selected: false),
@@ -155,6 +150,11 @@ extension Contact{
     }
 }
 
+struct FaceThumbnail: Identifiable, Hashable {
+    var id = UUID()
+    var image: UIImage
+    var isSelected: Bool = false
+}
 
 extension PhotoView {
     class PhotoViewModel: ObservableObject {
@@ -167,13 +167,13 @@ extension PhotoView {
         @Published var imageItem: UIImage = UIImage()
         @Published var selectedItem: PhotosPickerItem?
         @Published var newContactName = ""
-        @Published var newContactPhoto = UIImage()
         @Published var searchResults: [Contact] = []
         @Published var selectedNames: [Contact] = []
         @Published var searchText = ""
+        var detectedFaces: [VNFaceObservation] = []
+        @Published var faceThumbnails: [FaceThumbnail] = []
         
         var photoGalleryImages: [UIImage] = []
-        
         
         init(){
             addSampleData()
@@ -232,28 +232,37 @@ extension PhotoView {
             }
         }
        
-        var detectedFaces: [FaceObservation] = []
-        @Published var faceThumbnails: [UIImage] = []
-        
         func detectFaces() async {
-            
-            
             
             guard let cgImage = imageItem.cgImage else {
                 print("Failed to get CGImage from UIImage")
                 return
             }
-            let request = DetectFaceRectanglesRequest()
             
+            let request = VNDetectFaceRectanglesRequest(completionHandler: completionHandler)
             
-            let handler = ImageRequestHandler(cgImage)
-
+            #if targetEnvironment(simulator)
+            let allDevices = MLComputeDevice.allComputeDevices
+            for device in allDevices {
+                request.setComputeDevice(device, for: .main)
+            }
+            #endif
+            
+            let handler = VNImageRequestHandler(cgImage: cgImage)
             
             do {
-                self.detectedFaces = try await handler.perform(request)
+                try handler.perform([request])
                 await generateFaceThumbnails()
             } catch {
                 print("Error performing face detection: \(error)")
+            }
+            
+            func completionHandler (request: VNRequest, error: Error?) {
+                guard
+                    let barcodeObservations = request.results as? [VNFaceObservation] else {
+                    return
+                }
+                self.detectedFaces = barcodeObservations
             }
         }
         
@@ -284,62 +293,37 @@ extension PhotoView {
                 
                 if let cgCroppedImage = cgImage.cropping(to: scaledBox) {
                     let thumbnail = UIImage(cgImage: cgCroppedImage)
-                    faceThumbnails.append(thumbnail)
+                    faceThumbnails.append(FaceThumbnail(image: thumbnail))
                 }
             }
         }
         
-        private func sortFaceThumbnails(_ faces: [FaceObservation], imageSize: CGSize) -> [FaceObservation] {
-            // AI Assisted: Sort the FaceObservation array based on each face's relative position in the image.
-            
+        private func sortFaceThumbnails(_ faces: [VNFaceObservation], imageSize: CGSize) -> [VNFaceObservation] {
             guard let firstFace = faces.first else {
-                print("No faces detected")
-                return []
+                return faces
             }
             
-            let firstBoundingBox = firstFace.boundingBox
-            let boxHeight = firstBoundingBox.height * imageSize.height
-            let rowThreshold = boxHeight * 1.5 // Adjust as needed
+            // Calculate rowThreshold dynamically based on bounding box size compared to photo size
+            let rowThreshold = firstFace.boundingBox.height * imageSize.height * 1.5
             
-            // Group faces into rows
-            var rows: [[FaceObservation]] = []
-            var currentRow: [FaceObservation] = []
-            var lastY: CGFloat? = nil
-            
-            for face in faces.sorted(by: { $0.boundingBox.origin.y < $1.boundingBox.origin.y }) {
-                let boundingBox = face.boundingBox
-                let faceY = boundingBox.origin.y
+            // Sort first by the vertical position of the top of the bounding box (y-coordinate), then by the x-coordinate
+            let sortedFaces = faces.sorted { (face1, face2) -> Bool in
+                let face1Top = (1 - face1.boundingBox.origin.y) * imageSize.height
+                let face2Top = (1 - face2.boundingBox.origin.y) * imageSize.height
                 
-                if let lastY = lastY {
-                    if abs(faceY - lastY) * imageSize.height > rowThreshold {
-                        // Start a new row
-                        rows.append(currentRow)
-                        currentRow = []
-                    }
+                if abs(face1Top - face2Top) < rowThreshold {
+                    return face1.boundingBox.origin.x < face2.boundingBox.origin.x
+                } else {
+                    return face1Top < face2Top
                 }
-                currentRow.append(face)
-                lastY = faceY
             }
-            // Append the last row
-            if !currentRow.isEmpty {
-                rows.append(currentRow)
-            }
-            
-            // Sort rows by their average y-coordinate
-            let sortedRows = rows.sorted { row1, row2 in
-                let avgY1 = row1.map { $0.boundingBox.origin.y }.reduce(0, +) / CGFloat(row1.count)
-                let avgY2 = row2.map { $0.boundingBox.origin.y }.reduce(0, +) / CGFloat(row2.count)
-                return avgY1 > avgY2
-            }
-            
-            // Flatten sorted rows into a single array and sort each row by x-coordinate
-            return sortedRows.flatMap { row in
-                row.sorted { $0.boundingBox.origin.x < $1.boundingBox.origin.x }
-            }
+            return sortedFaces
         }
-
-
-
+        
+        // Deselect all thumbnails
+        func deselectAllThumbnails() {
+            faceThumbnails = faceThumbnails.map { FaceThumbnail(id: $0.id, image: $0.image, isSelected: false) }
+        }
     }
 }
 
