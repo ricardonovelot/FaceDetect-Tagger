@@ -56,9 +56,19 @@ struct PhotoView: View {
             NavigationView {
                 List{
                     ZStack(alignment: .bottom){
-                        Image(uiImage: viewModel.imageItem)
-                            .resizable()
-                            .scaledToFit()
+                        if let outputImage = viewModel.imageWithDetections {
+                            Image(uiImage: outputImage)
+                                .resizable()
+                                .scaledToFit()
+                        } else {
+                            Image(uiImage: viewModel.imageItem)
+                                .resizable()
+                                .scaledToFit()
+                        }
+                    }
+                    .listRowInsets(EdgeInsets())
+                    
+                    Section{
                         ScrollView(.horizontal) {
                             HStack{
                                 ForEach(viewModel.faceThumbnails, id: \.id) { thumbnail in
@@ -84,7 +94,7 @@ struct PhotoView: View {
                             }
                         }
                     }
-                    .listRowInsets(EdgeInsets())
+                    
                     
                     Section{
                         ForEach(viewModel.selectedNames){ contact in
@@ -122,6 +132,9 @@ struct PhotoView: View {
             }
             .task {
                 await viewModel.detectFaces()
+            }
+            .onDisappear {
+                viewModel.faceThumbnails = []
             }
         }
     }
@@ -175,6 +188,8 @@ extension PhotoView {
         
         var photoGalleryImages: [UIImage] = []
         
+        @Published var imageWithDetections: UIImage?
+        
         init(){
             addSampleData()
             searchResults = Contact.samples
@@ -192,7 +207,7 @@ extension PhotoView {
         }
         
         func addSampleGalleryImages() {
-            for i in 1...7 {
+            for i in 1...9 {
                 if let image = UIImage(named: "test-\(i)") {
                     UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
                 }
@@ -241,12 +256,12 @@ extension PhotoView {
             
             let request = VNDetectFaceRectanglesRequest(completionHandler: completionHandler)
             
-            #if targetEnvironment(simulator)
+#if targetEnvironment(simulator)
             let allDevices = MLComputeDevice.allComputeDevices
             for device in allDevices {
                 request.setComputeDevice(device, for: .main)
             }
-            #endif
+#endif
             
             let handler = VNImageRequestHandler(cgImage: cgImage)
             
@@ -263,37 +278,63 @@ extension PhotoView {
                     return
                 }
                 self.detectedFaces = barcodeObservations
+                
+                
+            }
+            
+            print("Number of faces detected on first round: \(detectedFaces.count)")
+            
+            if self.detectedFaces.isEmpty {
+                let imageWidth = cgImage.width
+                let imageHeight = cgImage.height
+                
+                for segment in 0..<2 {
+                    let segmentWidth = imageWidth / 2
+                    let xOffset = segment * segmentWidth
+                    let segmentRect = CGRect(x: xOffset, y: 0, width: segmentWidth, height: imageHeight)
+                    
+                    // Create a cropped CGImage for the segment
+                    guard let croppedImage = cgImage.cropping(to: segmentRect) else { continue }
+                    
+                    let handler = VNImageRequestHandler(cgImage: croppedImage)
+                    
+                    do {
+                        try handler.perform([request])
+                        await generateFaceThumbnails()
+                    } catch {
+                        print("Error performing face detection: \(error)")
+                    }
+                    print("Number of faces detected on second round: \(detectedFaces.count)")
+                }
             }
         }
+           
         
         @MainActor
         private func generateFaceThumbnails() {
-            faceThumbnails = []
-            
             guard let cgImage = imageItem.cgImage else {
                 print("Failed to get CGImage from UIImage")
                 return
             }
-            
-            let imageSize = CGSize(width: imageItem.size.width, height: imageItem.size.height)
-            
-            let sortedFaces = sortFaceThumbnails(detectedFaces, imageSize: imageSize)
-            
-            for face in sortedFaces {
-                let boundingBox = face.boundingBox
-                
-                let scaleFactor: CGFloat = 1.6 // Adjust this value to increase the box size (1.0 = original size)
 
-                let scaledBox = CGRect(
-                    x: boundingBox.origin.x * imageSize.width - (boundingBox.width * imageSize.width * (scaleFactor - 1)) / 2,
-                    y: (1 - boundingBox.origin.y - boundingBox.height) * imageSize.height - (boundingBox.height * imageSize.height * (scaleFactor - 1)) / 2,
-                    width: boundingBox.width * imageSize.width * scaleFactor,
-                    height: boundingBox.height * imageSize.height * scaleFactor
+            let imageSize = CGSize(width: imageItem.size.width, height: imageItem.size.height)
+
+            for face in detectedFaces {
+                let boundingBox = face.boundingBox
+
+                // No scaling applied; the box will be based directly on the face's boundingBox
+                let box = CGRect(
+                    x: boundingBox.origin.x * imageSize.width,
+                    y: (1 - boundingBox.origin.y - boundingBox.height) * imageSize.height,
+                    width: boundingBox.width * imageSize.width,
+                    height: boundingBox.height * imageSize.height
                 )
-                
-                if let cgCroppedImage = cgImage.cropping(to: scaledBox) {
+
+                if let cgCroppedImage = cgImage.cropping(to: box) {
                     let thumbnail = UIImage(cgImage: cgCroppedImage)
                     faceThumbnails.append(FaceThumbnail(image: thumbnail))
+                } else {
+                    print("Failed to crop image for boundingBox: \(boundingBox)")
                 }
             }
         }
@@ -323,6 +364,37 @@ extension PhotoView {
         // Deselect all thumbnails
         func deselectAllThumbnails() {
             faceThumbnails = faceThumbnails.map { FaceThumbnail(id: $0.id, image: $0.image, isSelected: false) }
+        }
+        
+        func addFaceRectsToImage(results: [VNFaceObservation], in image: CGImage){
+            let uiImage = UIImage(cgImage: image)
+            let imageSize = uiImage.size
+            
+            // Begin image context for drawing
+            UIGraphicsBeginImageContext(imageSize)
+            uiImage.draw(at: .zero)
+            
+            guard let context = UIGraphicsGetCurrentContext() else { return }
+            
+            // Set up rectangle drawing
+            context.setStrokeColor(UIColor.red.cgColor)
+            context.setLineWidth(5.0)
+            
+            for face in results {
+                let boundingBox = face.boundingBox
+                // Scale bounding box to the image size
+                let rect = CGRect(
+                    x: boundingBox.origin.x * imageSize.width,
+                    y: (1 - boundingBox.origin.y - boundingBox.size.height) * imageSize.height,
+                    width: boundingBox.size.width * imageSize.width,
+                    height: boundingBox.size.height * imageSize.height
+                )
+                
+                context.stroke(rect) // Draw rectangle
+            }
+            
+            imageWithDetections = UIGraphicsGetImageFromCurrentImageContext()
+            UIGraphicsEndImageContext()
         }
     }
 }
