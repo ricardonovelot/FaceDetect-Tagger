@@ -134,7 +134,8 @@ struct PhotoView: View {
                 await viewModel.detectFaces()
             }
             .onDisappear {
-                viewModel.faceThumbnails = []
+                viewModel.detectedFaces.removeAll()
+                viewModel.faceThumbnails.removeAll()
             }
         }
     }
@@ -175,7 +176,6 @@ extension PhotoView {
         @Published var showSheet = false
         @Published var showAddNameSheet = false
         @Published var showPhotosPicker = false
-        
         @Published var contacts: [Contact] = []
         @Published var imageItem: UIImage = UIImage()
         @Published var selectedItem: PhotosPickerItem?
@@ -183,12 +183,13 @@ extension PhotoView {
         @Published var searchResults: [Contact] = []
         @Published var selectedNames: [Contact] = []
         @Published var searchText = ""
-        var detectedFaces: [VNFaceObservation] = []
         @Published var faceThumbnails: [FaceThumbnail] = []
-        
-        var photoGalleryImages: [UIImage] = []
-        
         @Published var imageWithDetections: UIImage?
+        @Published var croppedImages: [CGImage] = []
+        
+        var detectedFaces: [VNFaceObservation] = []
+        var photoGalleryImages: [UIImage] = []
+
         
         init(){
             addSampleData()
@@ -256,12 +257,12 @@ extension PhotoView {
             
             let request = VNDetectFaceRectanglesRequest(completionHandler: completionHandler)
             
-#if targetEnvironment(simulator)
+            #if targetEnvironment(simulator)
             let allDevices = MLComputeDevice.allComputeDevices
             for device in allDevices {
                 request.setComputeDevice(device, for: .main)
             }
-#endif
+            #endif
             
             let handler = VNImageRequestHandler(cgImage: cgImage)
             
@@ -273,13 +274,8 @@ extension PhotoView {
             }
             
             func completionHandler (request: VNRequest, error: Error?) {
-                guard
-                    let barcodeObservations = request.results as? [VNFaceObservation] else {
-                    return
-                }
-                self.detectedFaces = barcodeObservations
-                
-                
+                guard let results = request.results as? [VNFaceObservation] else { return }
+                self.detectedFaces.append(contentsOf: results)
             }
             
             print("Number of faces detected on first round: \(detectedFaces.count)")
@@ -294,9 +290,9 @@ extension PhotoView {
                     let segmentRect = CGRect(x: xOffset, y: 0, width: segmentWidth, height: imageHeight)
                     
                     // Create a cropped CGImage for the segment
-                    guard let croppedImage = cgImage.cropping(to: segmentRect) else { continue }
+                    croppedImages.append(cgImage.cropping(to: segmentRect)!)
                     
-                    let handler = VNImageRequestHandler(cgImage: croppedImage)
+                    let handler = VNImageRequestHandler(cgImage: croppedImages[segment])
                     
                     do {
                         try handler.perform([request])
@@ -307,6 +303,7 @@ extension PhotoView {
                     print("Number of faces detected on second round: \(detectedFaces.count)")
                 }
             }
+            addFaceRectsToImage()
         }
            
         
@@ -322,7 +319,6 @@ extension PhotoView {
             for face in detectedFaces {
                 let boundingBox = face.boundingBox
 
-                // No scaling applied; the box will be based directly on the face's boundingBox
                 let box = CGRect(
                     x: boundingBox.origin.x * imageSize.width,
                     y: (1 - boundingBox.origin.y - boundingBox.height) * imageSize.height,
@@ -343,8 +339,7 @@ extension PhotoView {
             guard let firstFace = faces.first else {
                 return faces
             }
-            
-            // Calculate rowThreshold dynamically based on bounding box size compared to photo size
+            // rowThreshold based on bounding box size compared to photo size
             let rowThreshold = firstFace.boundingBox.height * imageSize.height * 1.5
             
             // Sort first by the vertical position of the top of the bounding box (y-coordinate), then by the x-coordinate
@@ -361,36 +356,30 @@ extension PhotoView {
             return sortedFaces
         }
         
-        // Deselect all thumbnails
         func deselectAllThumbnails() {
             faceThumbnails = faceThumbnails.map { FaceThumbnail(id: $0.id, image: $0.image, isSelected: false) }
         }
         
-        func addFaceRectsToImage(results: [VNFaceObservation], in image: CGImage){
-            let uiImage = UIImage(cgImage: image)
-            let imageSize = uiImage.size
-            
-            // Begin image context for drawing
+        func addFaceRectsToImage(){
+            let imageSize = imageItem.size
+        
             UIGraphicsBeginImageContext(imageSize)
-            uiImage.draw(at: .zero)
+            imageItem.draw(at: .zero)
             
             guard let context = UIGraphicsGetCurrentContext() else { return }
             
-            // Set up rectangle drawing
             context.setStrokeColor(UIColor.red.cgColor)
             context.setLineWidth(5.0)
             
-            for face in results {
+            for face in detectedFaces {
                 let boundingBox = face.boundingBox
-                // Scale bounding box to the image size
                 let rect = CGRect(
                     x: boundingBox.origin.x * imageSize.width,
                     y: (1 - boundingBox.origin.y - boundingBox.size.height) * imageSize.height,
                     width: boundingBox.size.width * imageSize.width,
                     height: boundingBox.size.height * imageSize.height
                 )
-                
-                context.stroke(rect) // Draw rectangle
+                context.stroke(rect)
             }
             
             imageWithDetections = UIGraphicsGetImageFromCurrentImageContext()
