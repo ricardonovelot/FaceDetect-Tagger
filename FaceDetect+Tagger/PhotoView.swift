@@ -52,8 +52,22 @@ struct PhotoView: View {
         .task(id:viewModel.selectedItem) {
             await viewModel.loadSelectedImage()
         }
-        .sheet(isPresented: $viewModel.showSheet) {
-            NavigationView {
+        .sheet(isPresented: $viewModel.showSheet){
+            addFacesView()
+        }
+    }
+}
+
+struct addFacesView: View {
+    @ObservedObject var viewModel = PhotoViewModel()
+    @FocusState private var focusedField: Field?
+    enum Field {
+        case main
+    }
+    
+    var body: some View{
+        NavigationView {
+            VStack{
                 List{
                     ZStack(alignment: .bottom){
                         if let outputImage = viewModel.imageWithDetections {
@@ -67,37 +81,15 @@ struct PhotoView: View {
                         }
                     }
                     .listRowInsets(EdgeInsets())
-                    .gesture(
-                        DragGesture(minimumDistance: 30)
-                            .onEnded { value in
-                                print("gesture captured")
-                                guard let index = viewModel.faces.firstIndex(where: { $0.isSelected }) else { return }
-                                
-                                // Check if the drag was horizontal
-                                if abs(value.translation.width) > abs(value.translation.height) {
-                                    // Deselect the current face
-                                    viewModel.faces[index].isSelected = false
-                                    
-                                    // Update the index based on the swipe direction
-                                    let newIndex = value.translation.width > 0 ? index + 1 : index - 1
-                                    
-                                    // Ensure the new index is within bounds
-                                    if viewModel.faces.indices.contains(newIndex) {
-                                        viewModel.faces[newIndex].isSelected = true
-                                    } else {
-                                        // Revert to the current index if out of bounds
-                                        viewModel.faces[index].isSelected = true
-                                    }
-                                }
-                            }
-                    )
                     
-                   
-                        Section{
-                            ScrollView(.horizontal) {
-                                HStack(spacing: 10){
-                                    ForEach(viewModel.faces, id: \.id) { thumbnail in
-                                        Image(uiImage: thumbnail.image)
+                    
+                    
+                    Section{
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 10){
+                                ForEach(viewModel.faces.indices, id: \.self) { index in
+                                    ZStack(alignment: .bottomTrailing){
+                                        Image(uiImage: viewModel.faces[index].image)
                                             .resizable()
                                             .scaledToFit()
                                             .frame(width: 70, height: 70)
@@ -105,20 +97,23 @@ struct PhotoView: View {
                                             .padding(4)
                                             .overlay(
                                                 Circle()
-                                                    .stroke(thumbnail.isSelected ? Color.blue : Color.clear, lineWidth: 2)
+                                                    .stroke(viewModel.selectedFaceIndex == index ? Color.blue : Color.clear, lineWidth: 2)
                                             )
-                                            .onTapGesture {
-                                                // Deselect all thumbnails first
-                                                viewModel.deselectAllThumbnails()
-                                                // Select only the tapped thumbnail
-                                                if let index = viewModel.faces.firstIndex(where: { $0.id == thumbnail.id }) {
-                                                    viewModel.faces[index].isSelected = true
-                                                }
-                                            }
+                                        if viewModel.faces[index].contact == nil{
+                                            Image(systemName: "questionmark.circle.fill")
+                                                .symbolRenderingMode(.palette)
+                                                .foregroundStyle(Color.white, Color.accentColor)
+                                        }
                                     }
+                                    
+                                        .onTapGesture {
+                                            // Update the selected face index
+                                            viewModel.selectedFaceIndex = index // Deselect if already selected
+                                        }
                                 }
                             }
                         }
+                    }
                     
                     
                     
@@ -130,22 +125,27 @@ struct PhotoView: View {
                     
                     Section{
                         TextField("", text: $viewModel.searchText, prompt: Text("Test"))
+                            .focused($focusedField, equals: .main)
                             .onChange(of: viewModel.searchText) { oldValue, newValue in
                                 viewModel.updateSearchResults()
                             }
                             .autocorrectionDisabled(true)
                             .onSubmit{
-                                if let firstResult = viewModel.searchResults.first,
-                                   let index = viewModel.searchResults.firstIndex(where: { $0.id == firstResult.id }) {
+                                focusedField = .main
+                                let newContact = Contact(name: viewModel.searchText)
+                                    
+                                viewModel.faces[viewModel.selectedFaceIndex].contact = newContact
+                                viewModel.selectedFaceIndex += 1
+                                
                                     
                                     // if contacto exite
                                     // agregar face selecctionada a contacto
+                                
                                     // else (contacto no existe)
                                     // crear contacto con texto y thumnail seleccionado
                                     //viewModel.contacts[index] =
                                     //viewModel.selectedNames.append(firstResult)
                                     //viewModel.searchResults[index].selected = true
-                                }
                                 
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                                     withAnimation{
@@ -153,29 +153,29 @@ struct PhotoView: View {
                                     }
                                 }
                             }
-                            
-                        // on swipe seleccionar siguiente contacto // seleccionar previo contacto
+                        
                         
                     }
                     
-
+                    
                     Section{
                         ForEach(viewModel.searchResults){ contact in
                             Text(contact.name)
-                                .foregroundStyle(contact.selected ? Color(uiColor: .secondaryLabel) : Color(uiColor: .label))
                         }
                     }
                 }
-                
-                .task {
-                    await viewModel.detectFaces()
-                }
             }
-            
-            .onDisappear {
-                viewModel.detectedFaces.removeAll()
-                viewModel.faces.removeAll()
-            }
+            .gesture(
+                DragGesture(minimumDistance: 20)
+                    .onEnded { value in
+                        viewModel.handleDragGesture(value: value)
+                    }
+            )
+        }
+        
+        .onDisappear {
+            viewModel.detectedFaces.removeAll()
+            viewModel.faces.removeAll()
         }
     }
 }
@@ -183,7 +183,6 @@ struct PhotoView: View {
 struct Contact: Identifiable {
     var id = UUID()
     var name: String
-    var selected: Bool
     
     func contains(_ query: String) -> Bool {
         return name.lowercased().contains(query.lowercased())
@@ -193,31 +192,29 @@ struct Contact: Identifiable {
 extension Contact {
     static var samples: [Contact] {
         return [
-            Contact(name: "Rachel Green", selected: false),
-            Contact(name: "Phoebe Buffay", selected: false),
-            Contact(name: "Chandler Bing", selected: false),
-            Contact(name: "Ross Geller", selected: false),
-            Contact(name: "Monica Geller", selected: false),
-            Contact(name: "Joey Tribbiani", selected: false)
+            Contact(name: "Rachel Green"),
+            Contact(name: "Phoebe Buffay"),
+            Contact(name: "Chandler Bing"),
+            Contact(name: "Ross Geller"),
+            Contact(name: "Monica Geller"),
+            Contact(name: "Joey Tribbiani")
         ]
     }
 }
 
-class Face: Identifiable {
+struct Face: Identifiable {
     var id = UUID()
     var image: UIImage
-    var isSelected: Bool
     var faceQuality: Float?
+    var contact: Contact?
     
-    init(id: UUID = UUID(), image: UIImage, isSelected: Bool = false, faceQuality: Float? = nil) {
+    init(id: UUID = UUID(), image: UIImage, faceQuality: Float? = nil) {
         self.id = id
         self.image = image
-        self.isSelected = isSelected
         self.faceQuality = faceQuality
     }
 }
 
-extension PhotoView {
     class PhotoViewModel: ObservableObject {
         
         @Published var showSheet = false
@@ -242,6 +239,7 @@ extension PhotoView {
         
         var segments = 1
         var segmentXOffset = 0.0
+        @Published var selectedFaceIndex: Int = 0
 
         
         init(){
@@ -283,11 +281,14 @@ extension PhotoView {
             if let pickerItem = selectedItem {
                 if let imageData = try? await pickerItem.loadTransferable(type: Data.self),
                    let uiImage = UIImage(data: imageData) {
-                    DispatchQueue.main.async {
+                    // WORKING ON THIS PART
+                    await MainActor.run {
                         self.imageItem = uiImage
                         self.showSheet = true
                         self.selectedItem = nil
+                        print("image loaded")
                     }
+                    await detectFaces() // Call after imageItem is set
                 }
             }
         }
@@ -304,7 +305,7 @@ extension PhotoView {
         func detectFaces() async {
             
             guard let cgImage = imageItem.cgImage else {
-                print("Failed to get CGImage from UIImage")
+                print("Failed to get CGImage from UIImage on detectedFaces()")
                 return
             }
             
@@ -369,19 +370,17 @@ extension PhotoView {
         @MainActor
         private func generateFaceThumbnails() {
             guard let cgImage = imageItem.cgImage else {
-                print("Failed to get CGImage from UIImage")
+                print("Failed to get CGImage from UIImage on generateFaceThumbnails")
                 return
             }
-
-            let imageSize = CGSize(width: imageItem.size.width/CGFloat(segments), height: imageItem.size.height)
-
             
+            let imageSize = CGSize(width: imageItem.size.width/CGFloat(segments), height: imageItem.size.height)
             
             for face in detectedFaces {
                 let boundingBox = face.boundingBox
-
+                
                 let scaleFactor: CGFloat = 1.8 // Adjust this value to increase the box size (1.0 = original size)
-
+                
                 let scaledBox = CGRect(
                     x: boundingBox.origin.x * imageSize.width - (boundingBox.width * imageSize.width * (scaleFactor - 1)) / 2,
                     y: (1 - boundingBox.origin.y - boundingBox.height) * imageSize.height - (boundingBox.height * imageSize.height * (scaleFactor - 1)) / 2,
@@ -401,14 +400,14 @@ extension PhotoView {
         func addFaceQuality(){
             let request = VNDetectFaceCaptureQualityRequest()
             
-            #if targetEnvironment(simulator)
+#if targetEnvironment(simulator)
             let allDevices = MLComputeDevice.allComputeDevices
             for device in allDevices {
                 request.setComputeDevice(device, for: .main)
             }
-            #endif
+#endif
             
-            for face in faces {
+            for (index, face) in faces.enumerated(){
                 let requestHandler = VNImageRequestHandler(cgImage: face.image as! CGImage)
                 do {
                     try requestHandler.perform([request])
@@ -416,7 +415,7 @@ extension PhotoView {
                     print("Can't make the request due to \(error)")
                 }
                 guard let results = request.results else { return }
-                face.faceQuality = results.first?.faceCaptureQuality
+                faces[index].faceQuality = results.first?.faceCaptureQuality
             }
             
             
@@ -441,10 +440,6 @@ extension PhotoView {
                 }
             }
             return sortedFaces
-        }
-        
-        func deselectAllThumbnails() {
-            faces = faces.map { Face(id: $0.id, image: $0.image, isSelected: false) }
         }
         
         func addFaceRectsToImage(){
@@ -472,8 +467,25 @@ extension PhotoView {
             imageWithDetections = UIGraphicsGetImageFromCurrentImageContext()
             UIGraphicsEndImageContext()
         }
+        
+        func handleDragGesture(value: DragGesture.Value) {
+            if faces.indices.contains(selectedFaceIndex) {
+                if value.translation.width > 0 {
+                    if selectedFaceIndex < faces.count - 1 {
+                        selectedFaceIndex += 1
+                        print(selectedFaceIndex)
+                    }
+                } else {
+                    if selectedFaceIndex > 0 {
+                        selectedFaceIndex -= 1
+                        print(selectedFaceIndex)
+                    }
+                }
+            }
+        }
     }
-}
+    
+
 
 #Preview {
     PhotoView()
