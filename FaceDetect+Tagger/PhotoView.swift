@@ -12,6 +12,7 @@ import Vision
 
 struct PhotoView: View {
     @ObservedObject var viewModel = PhotoViewModel()
+    @FocusState private var hasFocus: Bool
     
     var body: some View {
         NavigationStack{
@@ -53,129 +54,129 @@ struct PhotoView: View {
             await viewModel.loadSelectedImage()
         }
         .sheet(isPresented: $viewModel.showSheet){
-            addFacesView()
-        }
-    }
-}
-
-struct addFacesView: View {
-    @ObservedObject var viewModel = PhotoViewModel()
-    @FocusState private var focusedField: Field?
-    enum Field {
-        case main
-    }
-    
-    var body: some View{
-        NavigationView {
-            VStack{
-                List{
-                    ZStack(alignment: .bottom){
-                        if let outputImage = viewModel.imageWithDetections {
-                            Image(uiImage: outputImage)
-                                .resizable()
-                                .scaledToFit()
-                        } else {
-                            Image(uiImage: viewModel.imageItem)
-                                .resizable()
-                                .scaledToFit()
+            NavigationView {
+                VStack{
+                    List{
+                        ZStack(alignment: .bottom){
+                            if let outputImage = viewModel.imageWithDetections {
+                                Image(uiImage: outputImage)
+                                    .resizable()
+                                    .scaledToFit()
+                            } else {
+                                Image(uiImage: viewModel.imageItem)
+                                    .resizable()
+                                    .scaledToFit()
+                            }
                         }
-                    }
-                    .listRowInsets(EdgeInsets())
-                    
-                    
-                    
-                    Section{
-                        ScrollView(.horizontal) {
-                            HStack(spacing: 10){
-                                ForEach(viewModel.faces.indices, id: \.self) { index in
-                                    ZStack(alignment: .bottomTrailing){
-                                        Image(uiImage: viewModel.faces[index].image)
-                                            .resizable()
-                                            .scaledToFit()
-                                            .frame(width: 70, height: 70)
-                                            .clipShape(Circle())
-                                            .padding(4)
-                                            .overlay(
-                                                Circle()
-                                                    .stroke(viewModel.selectedFaceIndex == index ? Color.blue : Color.clear, lineWidth: 2)
-                                            )
-                                        if viewModel.faces[index].contact == nil{
-                                            Image(systemName: "questionmark.circle.fill")
-                                                .symbolRenderingMode(.palette)
-                                                .foregroundStyle(Color.white, Color.accentColor)
+                        .listRowInsets(EdgeInsets())
+                        
+                        
+                        
+                        Section{
+                            ScrollViewReader { value in
+                                ScrollView(.horizontal) {
+                                    
+                                    HStack(alignment: .top, spacing: 10){
+                                        ForEach(viewModel.faces.indices, id: \.self) { index in
+                                            VStack{
+                                                ZStack(alignment: .bottomTrailing){
+                                                    Image(uiImage: viewModel.faces[index].image)
+                                                        .resizable()
+                                                        .scaledToFit()
+                                                        .frame(width: 70, height: 70)
+                                                        .clipShape(Circle())
+                                                        .padding(4)
+                                                        .overlay(
+                                                            Circle()
+                                                                .stroke(viewModel.selectedFaceIndex == index ? Color.blue : Color.clear, lineWidth: 2)
+                                                        )
+                                                        
+                                                    if viewModel.faces[index].contact == nil{
+                                                        Image(systemName: "questionmark.circle.fill")
+                                                            .symbolRenderingMode(.palette)
+                                                            .foregroundStyle(Color.white, Color.accentColor)
+                                                    }
+                                                }
+                                                Text(viewModel.faces[index].contact?.name ?? "")
+                                            }
+                                            
+                                            .onTapGesture {
+                                                // Update the selected face index
+                                                viewModel.selectedFaceIndex = index // Deselect if already selected
+                                                withAnimation {
+                                                    value.scrollTo(viewModel.selectedFaceIndex)
+                                                }
+                                            }
                                         }
                                     }
-                                    
-                                        .onTapGesture {
-                                            // Update the selected face index
-                                            viewModel.selectedFaceIndex = index // Deselect if already selected
-                                        }
                                 }
                             }
                         }
-                    }
-                    
-                    
-                    
-                    Section{
-                        ForEach(viewModel.selectedNames){ contact in
-                            Text(contact.name)
-                        }
-                    }
-                    
-                    Section{
-                        TextField("", text: $viewModel.searchText, prompt: Text("Test"))
-                            .focused($focusedField, equals: .main)
-                            .onChange(of: viewModel.searchText) { oldValue, newValue in
-                                viewModel.updateSearchResults()
+                        
+                        
+                        
+                        Section{
+                            ForEach(viewModel.selectedNames){ contact in
+                                Text(contact.name)
                             }
-                            .autocorrectionDisabled(true)
-                            .onSubmit{
-                                focusedField = .main
-                                let newContact = Contact(name: viewModel.searchText)
+                        }
+                        
+                        Section{
+                            TextField("", text: $viewModel.searchText, prompt: Text("Test"))
+                                .focused($hasFocus)
+                                .onChange(of: viewModel.searchText) { oldValue, newValue in
+                                    viewModel.updateSearchResults()
+                                }
+                                .autocorrectionDisabled(true)
+                                .onSubmit{
+                                    hasFocus = true
+                                    let newContact = Contact(name: viewModel.searchText)
+                                        
+                                    viewModel.faces[viewModel.selectedFaceIndex].contact = newContact
+                                    viewModel.selectedFaceIndex += 1
                                     
-                                viewModel.faces[viewModel.selectedFaceIndex].contact = newContact
-                                viewModel.selectedFaceIndex += 1
-                                
+                                        
+                                        // if contacto exite
+                                        // agregar face selecctionada a contacto
                                     
-                                    // if contacto exite
-                                    // agregar face selecctionada a contacto
-                                
-                                    // else (contacto no existe)
-                                    // crear contacto con texto y thumnail seleccionado
-                                    //viewModel.contacts[index] =
-                                    //viewModel.selectedNames.append(firstResult)
-                                    //viewModel.searchResults[index].selected = true
-                                
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                    withAnimation{
-                                        viewModel.searchText = ""
+                                        // else (contacto no existe)
+                                        // crear contacto con texto y thumnail seleccionado
+                                        //viewModel.contacts[index] =
+                                        //viewModel.selectedNames.append(firstResult)
+                                        //viewModel.searchResults[index].selected = true
+                                    
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                        withAnimation{
+                                            viewModel.searchText = ""
+                                        }
                                     }
                                 }
+                            
+                            
+                        }
+                        
+                        
+                        Section{
+                            ForEach(viewModel.searchResults){ contact in
+                                Text(contact.name)
                             }
-                        
-                        
-                    }
-                    
-                    
-                    Section{
-                        ForEach(viewModel.searchResults){ contact in
-                            Text(contact.name)
                         }
                     }
                 }
+                .gesture(
+                    DragGesture(minimumDistance: 20)
+                        .onEnded { value in
+                            viewModel.handleDragGesture(value: value)
+                        }
+                )
             }
-            .gesture(
-                DragGesture(minimumDistance: 20)
-                    .onEnded { value in
-                        viewModel.handleDragGesture(value: value)
-                    }
-            )
-        }
-        
-        .onDisappear {
-            viewModel.detectedFaces.removeAll()
-            viewModel.faces.removeAll()
+            .task {
+                await viewModel.detectFaces()
+            }
+            .onDisappear {
+                viewModel.detectedFaces.removeAll()
+                viewModel.faces.removeAll()
+            }
         }
     }
 }
@@ -218,6 +219,7 @@ struct Face: Identifiable {
     class PhotoViewModel: ObservableObject {
         
         @Published var showSheet = false
+        @Published var hasFocus: Bool = false
         @Published var showAddNameSheet = false
         @Published var showPhotosPicker = false
         
@@ -282,13 +284,12 @@ struct Face: Identifiable {
                 if let imageData = try? await pickerItem.loadTransferable(type: Data.self),
                    let uiImage = UIImage(data: imageData) {
                     // WORKING ON THIS PART
-                    await MainActor.run {
+                    DispatchQueue.main.async {
                         self.imageItem = uiImage
                         self.showSheet = true
                         self.selectedItem = nil
                         print("image loaded")
                     }
-                    await detectFaces() // Call after imageItem is set
                 }
             }
         }
